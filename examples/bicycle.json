@@ -1,0 +1,20 @@
+{
+  "model": "qwen3.8-27b",
+  "state": "The bicycle is red.",
+  "questions": {
+    "color": {
+      "type": "choice",
+      "instructions": "What color is the bicycle?",
+      "criteria": { "red": null, "blue": "A blue bicycle" }
+    },
+    "support": {
+      "type": "score",
+      "instructions": "How strongly is redness supported?",
+      "criteria": ["Unsupported", "Partly supported", "Supported"]
+    },
+    "is_red": {
+      "type": "noul",
+      "instructions": "Is the bicycle red?"
+    }
+  }
+}

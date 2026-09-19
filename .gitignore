@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[oc]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local settings
+.env
+
+# Real facts/runs are produced on the Spark from live data; keep the repo's own examples
+# (data/.gitkeep, any committed reference run) but not ad hoc local output.
+/data/*.jsonl
+!/data/.gitkeep

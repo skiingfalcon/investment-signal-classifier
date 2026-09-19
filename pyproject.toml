@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "investment-signal-classifier"
+version = "0.1.0"
+description = "Numbers-driven investment-signal classifier: Simple Jev (llama.cpp) decides, a rule engine double-checks, gpt-oss-120b arbitrates disagreement"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.0",
+    "pydantic>=2",
+    "pydantic-settings>=2.8.0",
+    "numpy",
+    "typer>=0.16.0",
+    "rich>=14.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.11.0",
+]
+
+[project.scripts]
+isc = "isc.cli:app"
+
+# common/ has no pyproject of its own; bundle it as a plain sibling source folder,
+# the same way hf-server/pyproject.toml does.
+[tool.setuptools]
+packages = ["isc", "isc.jev", "common"]
+package-dir = {"" = "src", "common" = "../common"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "..", "../hf-server"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long criteria/instruction strings and Markdown table rows read worse wrapped than over 100
+# columns; both are human-facing prose, not code structure.
+"src/isc/questions.py" = ["E501"]
+"src/isc/report.py" = ["E501"]
