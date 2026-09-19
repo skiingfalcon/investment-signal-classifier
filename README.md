@@ -24,18 +24,19 @@ flowchart TD
 
     subgraph Spark["DGX Spark -- one resident model"]
         C["Stage 1: Simple Jev<br/>llama.cpp backend, qwen3.8-27b<br/>1 shared prefill, 8 questions,<br/>no text generated"]
-        G["Stage 2: Simple Jev<br/>noul -- 'do the facts support<br/>Jev's stage-1 claim?'"]
+        G["Stage 2: Simple Jev<br/>choice/score questions only --<br/>noul: 'do the facts support<br/>Jev's stage-1 claim?'"]
     end
 
     B --> C
     C --> E{"stage 1: confident AND<br/>agrees with rules?"}
     D --> E
     E -->|yes| F1(["route: auto"])
-    E -->|no, disputed| G
+    E -->|disputed choice/score| G
+    E -->|"disputed noul<br/>(no stage-2 call --<br/>a noul already is a probability)"| H
 
     G --> H{"support &gt;= 0.70,<br/>or does rules have an answer?"}
-    H -->|the claim is supported| F2(["route: verified<br/>(keep Jev's answer)"])
-    H -->|not supported, rules has one| F2
+    H -->|"the claim was supported"| F2(["route: verified<br/>(keep Jev's answer)"])
+    H -->|"claim not supported,<br/>or it was a noul --<br/>rules has an answer"| F2
     H -->|neither has an answer| I
 
     subgraph Hosted["Hosted frontier API -- fires only on disputes"]
@@ -68,9 +69,12 @@ real "double check" possible:
 1. **Stage 1** — Jev answers all eight questions in one shared-prefix call. An answer is accepted
    if it clears its confidence threshold and either agrees with the rule engine or the rule engine
    has no opinion (missing data).
-2. **Stage 2** (optional) — for every disputed question, one more Jev call asks a `noul`: *do the
-   facts support Jev's stage-1 claim?* High support accepts Jev's answer; low support falls back
-   to the rule engine's answer when it has one.
+2. **Stage 2** (optional) — for every disputed `choice`/`score` question, one more Jev call asks
+   a `noul`: *do the facts support Jev's stage-1 claim?* High support accepts Jev's answer; low
+   support falls back to the rule engine's answer when it has one. A disputed `noul` question
+   (`ocf_covers_net_income`, `eps_increased`) skips this call entirely — its answer already is a
+   probability, so there is no separate claim to test support for — and goes straight to "accept
+   the rule engine's answer if it has one, otherwise escalate."
 3. **Escalation** (optional) — whatever is still unresolved goes to a generative arbiter with the
    full picture — state, Jev's answers, the rule engine's answers — and a `strict` JSON-schema
    `response_format`, validated with Pydantic before anything is trusted. By default the arbiter
