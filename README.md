@@ -15,6 +15,47 @@ A numbers-driven investment-signal classifier built on three sibling projects:
   handles what the decision model and a rule check could not resolve, and every run is scored
   against ground truth with bootstrapped confidence intervals.
 
+## Architecture
+
+```mermaid
+flowchart TD
+    A["10-K financial facts<br/>(FactSet: current + prior fiscal year)"] --> B["state.py<br/>render derived state<br/>USD millions, change_pct, ratios"]
+    A --> D["rules.py<br/>label(fs): 8 questions<br/>answered from arithmetic"]
+
+    subgraph Spark["DGX Spark -- one resident model"]
+        C["Stage 1: Simple Jev<br/>llama.cpp backend, qwen3.8-27b<br/>1 shared prefill, 8 questions,<br/>no text generated"]
+        G["Stage 2: Simple Jev<br/>noul -- 'do the facts support<br/>Jev's stage-1 claim?'"]
+    end
+
+    B --> C
+    C --> E{"stage 1: confident AND<br/>agrees with rules?"}
+    D --> E
+    E -->|yes| F1(["route: auto"])
+    E -->|no, disputed| G
+
+    G --> H{"support &gt;= 0.70,<br/>or does rules have an answer?"}
+    H -->|the claim is supported| F2(["route: verified<br/>(keep Jev's answer)"])
+    H -->|not supported, rules has one| F2
+    H -->|neither has an answer| I
+
+    subgraph Hosted["Hosted frontier API -- fires only on disputes"]
+        I["Escalation: generative arbiter<br/>gpt-5.6-terra, strict JSON-schema<br/>response_format, Pydantic-validated"]
+    end
+
+    I --> J{"valid schema and<br/>not a 3-way split?"}
+    J -->|yes| F3(["route: escalated<br/>(keep arbiter's answer)"])
+    J -->|no| F4(["route: review<br/>(human decides)"])
+
+    F1 --> K["results.jsonl / run.json / report.md<br/>accuracy vs rules &amp; truth, agreement,<br/>route shares, extraction-impact"]
+    F2 --> K
+    F3 --> K
+    F4 --> K
+```
+
+Every question is answered independently and can land on a different route within the same
+company-year row; `decision.route` on the row is `auto` only if every question resolved at stage
+1, `review` if any question needed the arbiter and didn't get a clean answer from it.
+
 ## The idea
 
 State = the extracted financial facts for one company-fiscal-year (current + prior). Instead of
