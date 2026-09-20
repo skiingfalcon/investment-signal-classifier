@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 
 from isc import facts as facts_module
@@ -102,3 +103,65 @@ def test_extraction_impact_flags_model_rows_where_extraction_changed_a_label(
     assert acme_row["labels"]["extraction_changed_label"]
     report_text = (run_dir / "report.md").read_text()
     assert "Extraction impact" in report_text
+
+
+def test_run_logs_per_row_telemetry(tmp_path, sec_data_dir, caplog):
+    settings = Settings(spark_repo=tmp_path, runs_dir=tmp_path / "runs")
+    settings.sec_data_dir.parent.mkdir(parents=True, exist_ok=True)
+    factsets = _factsets(sec_data_dir)
+    with caplog.at_level(logging.INFO, logger="isc"):
+        pipeline.run(
+            settings,
+            backend=MockBackend(noise=0.0),
+            arbiter=None,
+            factsets=factsets,
+            verify=True,
+            escalate=False,
+        )
+    text = caplog.text
+    assert "starting run=" in text
+    assert "backend=mock" in text
+    assert "ACME" in text
+    assert "BETA" in text
+    assert "auto/" in text
+    assert "eta=" in text
+    assert "s1=" in text
+    assert "finished run=" in text
+
+
+def test_progress_line_includes_openrouter_cost_and_echoed_model():
+    from collections import Counter
+
+    from isc.pipeline import _progress_line
+
+    row = {
+        "ticker": "AAPL",
+        "fiscal_year_end": "2025-09-27",
+        "source": "xbrl",
+        "stage1": {
+            "latency_ms": 412.0,
+            "input_tokens": 800,
+            "metrics": {
+                "cost_usd": 0.00012,
+                "attempts": 2,
+                "echoed_model": "typesafe/jev-1.13-20260917",
+            },
+        },
+        "stage2": None,
+        "generative": None,
+        "decision": {
+            "route": "auto",
+            "final_signal": "bullish",
+            "outcomes": {"overall_signal": {"resolved_by": "stage1"}},
+        },
+    }
+    line = _progress_line(3, 10, row, elapsed_s=6.0, routes=Counter(auto=3), cost_usd=0.00036)
+    assert "[ 3/10]" in line
+    assert "AAPL" in line
+    assert "auto/bullish" in line
+    assert "cost=$0.00012" in line
+    assert "sum=$0.00036" in line
+    assert "attempts=2" in line
+    assert "model=typesafe/jev-1.13-20260917" in line
+    assert "tok=800" in line
+    assert "eta=" in line

@@ -16,6 +16,7 @@ unchanged -- everything from ``policy.py`` onward is identical for both backends
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,8 @@ import httpx
 
 if TYPE_CHECKING:
     from isc.config import Settings
+
+log = logging.getLogger("isc")
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504, 529}
 
@@ -128,6 +131,14 @@ class TypesafeJevClient:
                 last_error = str(exc)
                 if attempt >= self.retries:
                     break
+                log.warning(
+                    "jev %s retry %s/%s after %s (sleep %.1fs)",
+                    self.route,
+                    attempt + 1,
+                    self.retries + 1,
+                    last_error[:120],
+                    delay,
+                )
                 time.sleep(delay)
                 delay = min(delay * 2, self.max_retry_delay_s)
                 continue
@@ -137,6 +148,14 @@ class TypesafeJevClient:
             if r.status_code not in RETRYABLE_STATUS or attempt >= self.retries:
                 break
             wait = self._retry_after(r) or delay
+            log.warning(
+                "jev %s retry %s/%s after %s (sleep %.1fs)",
+                self.route,
+                attempt + 1,
+                self.retries + 1,
+                last_error[:120],
+                wait,
+            )
             time.sleep(wait)
             delay = min(delay * 2, self.max_retry_delay_s)
         raise RuntimeError(last_error)

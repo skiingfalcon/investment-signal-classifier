@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from pathlib import Path
 
 import typer
@@ -25,6 +27,20 @@ app = typer.Typer(add_completion=False)
 jev_app = typer.Typer(add_completion=False)
 app.add_typer(jev_app, name="jev")
 console = Console()
+log = logging.getLogger("isc")
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Send ``isc`` INFO+ telemetry to stderr so a live run is watchable."""
+    logger = logging.getLogger("isc")
+    numeric = getattr(logging, level.upper(), logging.INFO)
+    logger.setLevel(numeric)
+    if logger.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+    logger.addHandler(handler)
+    logger.propagate = False
 
 
 def _default_tickers(settings: Settings) -> list[str]:
@@ -161,6 +177,16 @@ def _build_backend(
     raise typer.BadParameter(f"Unknown --backend {backend_name!r}")
 
 
+def _describe_backend(backend, settings: Settings) -> str:
+    name = getattr(backend, "name", backend.__class__.__name__)
+    if name == "llamacpp":
+        return f"url={settings.jev_base_url} model={backend.model}"
+    if name == "typesafe":
+        client = backend.client
+        return f"route={client.route} url={client.url} model={client.model}"
+    return f"model={getattr(backend, 'model', '?')}"
+
+
 def _build_arbiter(settings: Settings, *, gen_model: str | None) -> GenerativeArbiter:
     if settings.gen_provider == "openai" and not settings.openai_api_key:
         raise typer.BadParameter(
@@ -200,6 +226,7 @@ def run_cmd(
     allow_experimental: bool = typer.Option(False),
 ) -> None:
     """Run the cascade over a facts.jsonl and write a run directory."""
+    configure_logging()
     settings = get_settings()
     factsets = facts_module.read_facts(facts_path)
     if source_filter:
@@ -217,6 +244,23 @@ def run_cmd(
     arbiter = None
     if escalate and backend != "mock":
         arbiter = _build_arbiter(settings, gen_model=gen_model)
+
+    n = len(factsets) if limit is None else min(limit, len(factsets))
+    log.info(
+        "backend=%s %s",
+        getattr(decision_backend, "name", backend),
+        _describe_backend(decision_backend, settings),
+    )
+    if arbiter is not None:
+        log.info(
+            "arbiter provider=%s model=%s url=%s",
+            settings.gen_provider,
+            gen_model or settings.gen_model,
+            settings.gen_base_url,
+        )
+    else:
+        log.info("arbiter=off")
+    log.info("facts=%s rows=%s verify=%s escalate=%s", facts_path, n, verify, escalate)
 
     run_dir = pipeline.run(
         settings,

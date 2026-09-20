@@ -7,10 +7,13 @@ forced boundary (see ``llamacpp_backend.py``).
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 import httpx
+
+log = logging.getLogger("isc")
 
 
 class LlamaServerError(RuntimeError):
@@ -75,13 +78,29 @@ class LlamaServerClient:
             except httpx.HTTPError as exc:
                 last_exc = exc
                 if attempt < self.retries:
+                    log.warning(
+                        "llama-server %s retry %s/%s after %s (sleep %.1fs)",
+                        path,
+                        attempt + 1,
+                        self.retries + 1,
+                        str(exc)[:120],
+                        delay,
+                    )
                     time.sleep(delay)
                     delay = min(delay * 2, 30.0)
                     continue
                 raise LlamaServerError(f"{path}: {exc}") from exc
             if r.status_code == 503 and attempt < self.retries:
                 retry_after = r.headers.get("Retry-After")
-                time.sleep(float(retry_after) if retry_after else delay)
+                wait = float(retry_after) if retry_after else delay
+                log.warning(
+                    "llama-server %s retry %s/%s after HTTP 503 (sleep %.1fs)",
+                    path,
+                    attempt + 1,
+                    self.retries + 1,
+                    wait,
+                )
+                time.sleep(wait)
                 delay = min(delay * 2, 30.0)
                 continue
             if r.status_code >= 400:

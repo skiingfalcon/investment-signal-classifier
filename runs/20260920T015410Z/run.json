@@ -1,0 +1,40 @@
+{
+  "backend": "llamacpp",
+  "jev_model": "qwen3.8-27b",
+  "gen_model": "gpt-5.6-terra",
+  "state_mode": "derived",
+  "verify": true,
+  "escalate": true,
+  "n": 336,
+  "questions_hash": "3ed5460bba12",
+  "policy": {
+    "choice_conf": {
+      "overall_signal": 0.7,
+      "*": 0.6
+    },
+    "score_conf": 0.5,
+    "noul_act": 0.75,
+    "support_min": 0.7
+  },
+  "thresholds": {
+    "revenue_pct": 3.0,
+    "net_income_pct": 5.0,
+    "share_pct": 1.0,
+    "de_low": 0.5,
+    "de_high": 2.0,
+    "cash_to_debt_strong": 1.0,
+    "cash_to_debt_adequate": 0.25
+  },
+  "wall_s": 5183.084389689,
+  "routes": {
+    "verified": 306,
+    "review": 22,
+    "auto": 8
+  },
+  "jev_backend_metrics": {
+    "stage1_cost_usd": 0.0,
+    "stage2_cost_usd": 0.0,
+    "cost_estimated_any": false,
+    "echoed_models": []
+  }
+}

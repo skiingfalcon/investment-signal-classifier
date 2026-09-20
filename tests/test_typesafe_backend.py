@@ -4,6 +4,7 @@ proving the shared policy code treats the local and hosted backends identically.
 """
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -104,7 +105,7 @@ def test_cost_is_estimated_when_usage_omits_it():
     assert envelope["metrics"]["cost_usd"] == pytest.approx(50 * 0.042 / 1_000_000)
 
 
-def test_retries_on_429_then_succeeds(monkeypatch):
+def test_retries_on_429_then_succeeds(monkeypatch, caplog):
     sleeps = []
     monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
     calls = []
@@ -116,10 +117,13 @@ def test_retries_on_429_then_succeeds(monkeypatch):
         return httpx.Response(200, json={"model": "x", "answers": {}, "usage": {}})
 
     client = _mock_client(handler, retry_delay_s=0.01)
-    envelope = client.classify({"model": "x", "state": {}, "questions": {}})
+    with caplog.at_level(logging.WARNING, logger="isc"):
+        envelope = client.classify({"model": "x", "state": {}, "questions": {}})
     assert len(calls) == 2
     assert sleeps == [2.0]
     assert envelope["metrics"]["attempts"] == 2
+    assert "jev openrouter retry" in caplog.text
+    assert "429" in caplog.text
 
 
 def test_gives_up_after_retries_exhausted(monkeypatch):

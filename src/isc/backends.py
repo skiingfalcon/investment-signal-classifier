@@ -10,6 +10,7 @@ low-confidence wrong answer -- enough to exercise every routing path in ``policy
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ from typing import Any, Protocol
 
 from isc import rules
 from isc.questions import Choice, Question, Score, questions_json
+
+log = logging.getLogger("isc")
 
 
 @dataclass
@@ -104,11 +107,19 @@ class JevBackend:
         try:
             envelope = self.client.classify(request, advanced=True)
         except Exception as exc:  # noqa: BLE001 - recorded, not raised, like the cascade backends
+            latency_ms = (time.perf_counter() - t0) * 1000
+            log.warning(
+                "jev classify failed backend=%s model=%s after %sms: %s",
+                self.name,
+                self.model,
+                f"{latency_ms:.0f}",
+                exc,
+            )
             return DecisionResult(
                 answers={},
                 model=self.model,
                 error=str(exc),
-                latency_ms=(time.perf_counter() - t0) * 1000,
+                latency_ms=latency_ms,
             )
         latency_ms = (time.perf_counter() - t0) * 1000
         answers = {qid: Answer.from_json(raw) for qid, raw in envelope.get("answers", {}).items()}
