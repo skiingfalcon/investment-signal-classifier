@@ -1,0 +1,42 @@
+{
+  "backend": "typesafe",
+  "jev_model": "typesafe/jev-1.13",
+  "gen_model": "gpt-5.6-terra",
+  "state_mode": "derived",
+  "verify": true,
+  "escalate": true,
+  "n": 336,
+  "questions_hash": "3ed5460bba12",
+  "policy": {
+    "choice_conf": {
+      "overall_signal": 0.7,
+      "*": 0.6
+    },
+    "score_conf": 0.5,
+    "noul_act": 0.75,
+    "support_min": 0.7
+  },
+  "thresholds": {
+    "revenue_pct": 3.0,
+    "net_income_pct": 5.0,
+    "share_pct": 1.0,
+    "de_low": 0.5,
+    "de_high": 2.0,
+    "cash_to_debt_strong": 1.0,
+    "cash_to_debt_adequate": 0.25
+  },
+  "wall_s": 581.1601364410017,
+  "routes": {
+    "auto": 265,
+    "escalated": 68,
+    "verified": 3
+  },
+  "jev_backend_metrics": {
+    "stage1_cost_usd": 0.029886402,
+    "stage2_cost_usd": 0.002048298,
+    "cost_estimated_any": false,
+    "echoed_models": [
+      "typesafe/jev-1.13-20260917"
+    ]
+  }
+}
