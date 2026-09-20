@@ -6,25 +6,76 @@ A numbers-driven investment-signal classifier built on three sibling projects:
   questions (`choice` / `score` / `noul`); the model is pushed to the exact position where its
   answer would start, and the classifier reads the probability it assigns to each allowed answer
   token there. No text is ever generated. This project adds a **llama.cpp backend** for it
-  (`src/isc/jev/`) alongside the existing `hf-server` (torch/transformers) reference backend.
+  (`src/isc/jev/llamacpp_backend.py`) alongside the existing `hf-server` (torch/transformers)
+  reference backend.
 - **[llama-cpp-spark](../../llama-cpp-spark)** — has already extracted 11 XBRL financial facts
   from the latest 10-K of 12 companies with 14 model runs on a DGX Spark. This project reads that
   corpus and those extraction results directly; it does not re-extract anything.
 - **[jev-email-cascade](../../jev-email-cascade)** — the pattern this project's cascade and
   evaluation harness follow: a typed decision model decides, plain code routes, a generative model
   handles what the decision model and a rule check could not resolve, and every run is scored
-  against ground truth with bootstrapped confidence intervals.
+  against ground truth with bootstrapped confidence intervals. Its Jev client
+  (`src/jev_email_cascade/jev_client.py`) is mirrored here as
+  `src/isc/jev/typesafe_backend.py`, the second JEV backend against TypeSafe's actual hosted Jev.
 
 ## Architecture
+
+The cascade has two interchangeable JEV backends (`isc run --backend llamacpp` or
+`--backend typesafe`). Everything except the boxed "Stage 1 / Stage 2" subgraph below is drawn
+**identically** in both diagrams — same facts, same rendered state, same rule engine, same
+policy, same escalation arbiter, same run artifacts. The Jev backend is the only variable, which
+is the point: it lets a run on local qwen3.8-27b and a run on TypeSafe's actual hosted Jev be
+compared on everything else held constant, to tell "qwen introduced an issue" apart from
+"the questions/policy have an issue."
+
+### Path A — local Jev on the Spark (`--backend llamacpp`)
 
 ```mermaid
 flowchart TD
     A["10-K financial facts<br/>(FactSet: current + prior fiscal year)"] --> B["state.py<br/>render derived state<br/>USD millions, change_pct, ratios"]
     A --> D["rules.py<br/>label(fs): 8 questions<br/>answered from arithmetic"]
 
-    subgraph Spark["DGX Spark -- one resident model"]
-        C["Stage 1: Simple Jev<br/>llama.cpp backend, qwen3.8-27b<br/>1 shared prefill, 8 questions,<br/>no text generated"]
-        G["Stage 2: Simple Jev<br/>choice/score questions only --<br/>noul: 'do the facts support<br/>Jev's stage-1 claim?'"]
+    subgraph Spark["DGX Spark -- one resident model, $0 marginal cost"]
+        C["Stage 1: Simple Jev on qwen3.8-27b<br/>llama.cpp backend renders the prompt,<br/>forces a fixed answer boundary, reads<br/>next-token label logits -- no text generated"]
+        G["Stage 2: Simple Jev on qwen3.8-27b<br/>choice/score questions only --<br/>noul: 'do the facts support<br/>Jev's stage-1 claim?'"]
+    end
+
+    B --> C
+    C --> E{"stage 1: confident AND<br/>agrees with rules?"}
+    D --> E
+    E -->|yes| F1(["route: auto"])
+    E -->|disputed choice/score| G
+    E -->|"disputed noul<br/>(no stage-2 call --<br/>a noul already is a probability)"| H
+
+    G --> H{"support &gt;= 0.70,<br/>or does rules have an answer?"}
+    H -->|"the claim was supported"| F2(["route: verified<br/>(keep Jev's answer)"])
+    H -->|"claim not supported,<br/>or it was a noul --<br/>rules has an answer"| F2
+    H -->|neither has an answer| I
+
+    subgraph Hosted["Hosted frontier API -- fires only on disputes"]
+        I["Escalation: generative arbiter<br/>gpt-5.6-terra, strict JSON-schema<br/>response_format, Pydantic-validated"]
+    end
+
+    I --> J{"valid schema and<br/>not a 3-way split?"}
+    J -->|yes| F3(["route: escalated<br/>(keep arbiter's answer)"])
+    J -->|no| F4(["route: review<br/>(human decides)"])
+
+    F1 --> K["results.jsonl / run.json / report.md<br/>accuracy vs rules &amp; truth, agreement,<br/>route shares, extraction-impact"]
+    F2 --> K
+    F3 --> K
+    F4 --> K
+```
+
+### Path B — hosted TypeSafe Jev, as the control (`--backend typesafe`)
+
+```mermaid
+flowchart TD
+    A["10-K financial facts<br/>(FactSet: current + prior fiscal year)"] --> B["state.py<br/>render derived state<br/>USD millions, change_pct, ratios"]
+    A --> D["rules.py<br/>label(fs): 8 questions<br/>answered from arithmetic"]
+
+    subgraph TypeSafe["TypeSafe hosted Jev -- api.typesafe.ai, or OpenRouter; no local model"]
+        C["Stage 1: Simple Jev, hosted<br/>same {state, questions} body over HTTPS;<br/>Jev's own model returns native per-question<br/>probabilities; a dated build id is echoed<br/>back and recorded; every call is billed"]
+        G["Stage 2: Simple Jev, hosted<br/>choice/score questions only --<br/>noul: 'do the facts support<br/>Jev's stage-1 claim?'"]
     end
 
     B --> C
@@ -56,6 +107,30 @@ flowchart TD
 Every question is answered independently and can land on a different route within the same
 company-year row; `decision.route` on the row is `auto` only if every question resolved at stage
 1, `review` if any question needed the arbiter and didn't get a clean answer from it.
+
+| | Path A: `llamacpp` | Path B: `typesafe` |
+|---|---|---|
+| Runs on | Spark GPU (llama-server, qwen3.8-27b) | Hosted API (TypeSafe direct or OpenRouter) |
+| How answers are produced | This project reads next-token label logits itself | Jev's own model returns native per-question probabilities |
+| Cost per call | $0 marginal, after the hardware | Per input token (`isc.jev.typesafe_backend.JEV_PRICE_PER_INPUT_TOKEN`, or `usage.cost` when the API reports it) |
+| Reproducibility | Deterministic given the GGUF and prompt | Floats across dated builds (`jev-latest` / `typesafe/jev-1.13`) -- pin with `--model` |
+| What it's for | The production path | The control: isolates "is qwen/this backend the problem" from "is the question/policy the problem" |
+
+### Comparing local qwen against hosted Jev
+
+```bash
+uv run isc facts --source xbrl --years 5 --source model:all --out data/facts.jsonl
+uv run isc run --backend llamacpp --facts-path data/facts.jsonl --verify --escalate
+uv run isc run --backend typesafe --facts-path data/facts.jsonl --verify --escalate
+uv run isc compare runs/<local-stamp> runs/<hosted-stamp> --markdown
+```
+
+What to read in that comparison: per-question stage-1 accuracy vs the rule engine (definition
+fidelity -- if qwen is materially lower on one question, the local backend, not the questions, is
+the suspect), route shares paired with final accuracy (calibration: does a backend land in `auto`
+more often *and* stay right, or just more often), confidence on the rows where the two backends
+disagree, and the cost column. `isc compare` warns if the two runs used a different question set,
+state mode, or fact count -- a comparison across those is not a backend comparison.
 
 ## The idea
 
@@ -98,8 +173,10 @@ src/isc/
   questions.py              the 8 Jev questions, worded from THRESHOLDS; stage-2 claims
   state.py                  FactSet -> the `state` object sent to Jev
   backends.py               Answer/DecisionResult/DecisionBackend, JevBackend, MockBackend
-  jev/                      llama.cpp Simple Jev backend (llama_server.py, model_profiles.py,
-                             llamacpp_backend.py) -- see its module docstrings for the mechanics
+  jev/                      two RawJevClient implementations, both dropping into JevBackend:
+                             llamacpp_backend.py + llama_server.py + model_profiles.py (local,
+                             qwen3.8-27b) and typesafe_backend.py (hosted TypeSafe Jev, the
+                             control) -- see their module docstrings for the mechanics
   policy.py, verify.py      the 3-stage resolution + the generative arbiter
   pipeline.py, report.py    run orchestration, run-dir artifacts, metrics + Markdown report
   cli.py                    `isc facts|show|questions|run|report|compare|jev classify`
@@ -118,14 +195,17 @@ cp env.example .env   # set OPENAI_API_KEY; adjust ISC_SPARK_REPO if not a sibli
 # 1. Build the eval set: ~60 XBRL company-years (exact labels) plus every committed extraction run.
 uv run isc facts --source xbrl --years 5 --source model:all --out data/facts.jsonl
 
-# 2. Serve the Jev backend (from the llama-cpp-spark checkout). Only one local model is needed --
-#    the escalation arbiter is a hosted frontier model, not a second resident server.
+# 2a. Local Jev backend (from the llama-cpp-spark checkout). Only one local model is needed --
+#     the escalation arbiter is a hosted frontier model, not a second resident server.
 uv run local-llm serve qwen3.8-27b   # :8084
-
-# 3. Run the cascade.
 uv run isc run --backend llamacpp --verify --escalate
 
-# 4. Report / compare runs.
+# 2b. Or the hosted Jev backend instead -- set OPENROUTER_API_KEY or TYPESAFE_API_KEY, no server
+#     to run. This is the control for "did using qwen introduce issues": same facts, questions,
+#     rules, and policy as 2a, only the backend differs.
+uv run isc run --backend typesafe --verify --escalate
+
+# 3. Report / compare runs.
 uv run isc report runs/<stamp> --markdown
 uv run isc compare runs/<stamp-a> runs/<stamp-b> --markdown
 ```
@@ -146,7 +226,7 @@ backend against the classic Simple Jev "bicycle" example from `common/PROMPT_STR
 ## Testing
 
 ```bash
-uv run pytest -q       # 73 tests, no network, no GPU
+uv run pytest -q       # 91 tests, no network, no GPU
 uv run ruff check src tests
 uv run ruff format --check src tests
 ```
@@ -173,3 +253,11 @@ the extraction-impact report without touching the real corpus.
 - A label missing from a branch's top-`k` logprobs is scored on a floor value and reported in
   `metrics.missing_labels`, not silently ignored; see `jev/llamacpp_backend.py` for exactly when
   that can and cannot change an answer.
+- The hosted `typesafe` backend's rate limits are undocumented; keep `--parallel 1` on a first
+  run of any size (a 60-row XBRL run is ~120 calls). `jev-latest` / `typesafe/jev-1.13` float
+  across dated builds -- `run.json`'s `jev_backend_metrics.echoed_models` records what actually
+  answered, and `--model` pins a specific build for a reproducible comparison.
+  `~typesafe/jev-latest` currently lists no serving endpoint on OpenRouter; use
+  `typesafe/jev-1.13`. A disagreement between the `llamacpp` and `typesafe` backends on a
+  question is evidence, not a verdict -- the rule engine, not either backend, decides who was
+  right.

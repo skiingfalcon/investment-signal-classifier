@@ -136,6 +136,16 @@ def cost_latency_metrics(rows: list[dict]) -> dict:
     cached_total = sum(
         r["stage1"].get("metrics", {}).get("cached_tokens_total", 0) or 0 for r in rows
     )
+    # Zero for the local llama.cpp backend (no per-call billing); non-zero for a hosted Jev
+    # backend (isc.jev.typesafe_backend). Read from stage1/stage2 metrics directly rather than
+    # run_meta so a single-run report doesn't need the run.json roll-up to show cost.
+    stage1_cost = sum(r["stage1"].get("metrics", {}).get("cost_usd") or 0.0 for r in rows)
+    stage2_cost = sum((r["stage2"] or {}).get("metrics", {}).get("cost_usd") or 0.0 for r in rows)
+    cost_estimated_any = any(
+        r["stage1"].get("metrics", {}).get("cost_estimated")
+        or (r["stage2"] or {}).get("metrics", {}).get("cost_estimated")
+        for r in rows
+    )
     return {
         "stage1_latency_p50_ms": percentile(stage1_latency, 0.5),
         "stage1_latency_p95_ms": percentile(stage1_latency, 0.95),
@@ -146,6 +156,8 @@ def cost_latency_metrics(rows: list[dict]) -> dict:
         "stage1_prompt_tokens_total": prompt_total,
         "stage1_cached_tokens_total": cached_total,
         "stage1_cache_hit_ratio": (cached_total / prompt_total) if prompt_total else None,
+        "jev_cost_usd": stage1_cost + stage2_cost,
+        "jev_cost_estimated": cost_estimated_any,
     }
 
 
@@ -232,6 +244,9 @@ def render_markdown(run_meta: dict, rows: list[dict]) -> str:
     gen_lat = (
         f"{_fmt(cl['generative_latency_p50_ms'], 1)}/{_fmt(cl['generative_latency_p95_ms'], 1)}"
     )
+    cost_note = " (estimated)" if cl["jev_cost_estimated"] else ""
+    # 6 decimals: a single-row hosted-Jev cost can be a few 1e-7 dollars and would otherwise
+    # round to the same "$0.0000" a local backend's genuine $0 shows.
     lines += [
         "",
         "## Cost / latency",
@@ -240,26 +255,60 @@ def render_markdown(run_meta: dict, rows: list[dict]) -> str:
         f"stage2 p50/p95 ms: {stage2_lat}  \n"
         f"generative p50/p95 ms: {gen_lat}  \n"
         f"stage1 prompt tokens total: {cl['stage1_prompt_tokens_total']} "
-        f"(cached: {cl['stage1_cached_tokens_total']}, hit ratio: {_fmt(cl['stage1_cache_hit_ratio'])})",
+        f"(cached: {cl['stage1_cached_tokens_total']}, hit ratio: {_fmt(cl['stage1_cache_hit_ratio'])})  \n"
+        f"JEV backend cost (stage1+stage2): ${cl['jev_cost_usd']:.6f}{cost_note} "
+        "(always 0 for the local llama.cpp backend; per-call billing for a hosted Jev backend)",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _mean_stage1_accuracy(per_question: dict) -> float | None:
+    values = [
+        q["stage1_accuracy_vs_rules"]
+        for q in per_question.values()
+        if q["stage1_accuracy_vs_rules"] is not None
+    ]
+    return sum(values) / len(values) if values else None
+
+
+def _mismatch_warnings(runs: list[tuple[dict, list[dict]]]) -> list[str]:
+    """A comparison across different questions, state rendering, or facts is not a backend
+    comparison -- flag it instead of printing a table that looks comparable but isn't.
+    """
+    warnings = []
+    hashes = {rm.get("questions_hash") for rm, _ in runs}
+    if len(hashes) > 1:
+        warnings.append(f"questions_hash differs across runs: {sorted(hashes)}")
+    modes = {rm.get("state_mode") for rm, _ in runs}
+    if len(modes) > 1:
+        warnings.append(f"state_mode differs across runs: {sorted(modes)}")
+    ns = {rm.get("n") for rm, _ in runs}
+    if len(ns) > 1:
+        warnings.append(f"n (facts count) differs across runs: {sorted(ns)}")
+    return warnings
 
 
 def render_compare(runs: list[tuple[dict, list[dict]]]) -> str:
     lines = [
         "| run | backend | jev_model | state_mode | n | overall_signal final acc "
-        "| auto | verified | escalated | review |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| mean stage1 vs rules | cost usd | auto | verified | escalated | review |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for run_meta, rows in runs:
         m = compute_metrics(run_meta, rows)
         overall = m["per_question"].get("overall_signal", {})
         routes = m["routes"]
         acc = _fmt(overall.get("final_accuracy_vs_truth"))
+        mean_stage1 = _fmt(_mean_stage1_accuracy(m["per_question"]))
+        jbm = run_meta.get("jev_backend_metrics") or {}
+        cost = (jbm.get("stage1_cost_usd") or 0.0) + (jbm.get("stage2_cost_usd") or 0.0)
+        cost_str = f"{cost:.6f}" + ("*" if jbm.get("cost_estimated_any") else "")
         lines.append(
             f"| {run_meta.get('run_id', '-')} | {run_meta.get('backend')} | "
             f"{run_meta.get('jev_model')} | {run_meta.get('state_mode')} | {run_meta.get('n')} | "
-            f"{acc} | {routes.get('auto', 0)} | {routes.get('verified', 0)} | "
-            f"{routes.get('escalated', 0)} | {routes.get('review', 0)} |"
+            f"{acc} | {mean_stage1} | {cost_str} | {routes.get('auto', 0)} | "
+            f"{routes.get('verified', 0)} | {routes.get('escalated', 0)} | {routes.get('review', 0)} |"
         )
+    for warning in _mismatch_warnings(runs):
+        lines.append(f"\n> warning: {warning}")
     return "\n".join(lines) + "\n"

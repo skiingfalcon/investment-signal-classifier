@@ -139,9 +139,30 @@ def run(
             f.write(json.dumps(row))
             f.write("\n")
 
+    stage1_cost = sum(r["stage1"].get("metrics", {}).get("cost_usd") or 0.0 for r in rows)
+    stage2_cost = sum((r["stage2"] or {}).get("metrics", {}).get("cost_usd") or 0.0 for r in rows)
+    cost_estimated_any = any(
+        r["stage1"].get("metrics", {}).get("cost_estimated")
+        or (r["stage2"] or {}).get("metrics", {}).get("cost_estimated")
+        for r in rows
+    )
+    echoed_models = sorted(
+        {
+            m
+            for r in rows
+            for m in (
+                r["stage1"].get("metrics", {}).get("echoed_model"),
+                (r["stage2"] or {}).get("metrics", {}).get("echoed_model"),
+            )
+            if m
+        }
+    )
+
     run_meta = {
+        # The effective model actually used: settings.jev_model for the local backend, or the
+        # hosted route's model id (possibly overridden by --model) for the typesafe backend.
         "backend": getattr(backend, "name", backend.__class__.__name__),
-        "jev_model": settings.jev_model,
+        "jev_model": getattr(backend, "model", settings.jev_model),
         "gen_model": settings.gen_model if arbiter is not None else None,
         "state_mode": state_mode,
         "verify": verify,
@@ -152,6 +173,14 @@ def run(
         "thresholds": rules.THRESHOLDS,
         "wall_s": wall_s,
         "routes": dict(Counter(row["decision"]["route"] for row in rows)),
+        # 0.0 / False / [] for the local backend, which has no per-call billing; non-zero for a
+        # hosted Jev backend. That asymmetry is itself the cost row of a backend comparison.
+        "jev_backend_metrics": {
+            "stage1_cost_usd": stage1_cost,
+            "stage2_cost_usd": stage2_cost,
+            "cost_estimated_any": cost_estimated_any,
+            "echoed_models": echoed_models,
+        },
     }
     (run_dir / "run.json").write_text(json.dumps(run_meta, indent=2, default=str))
     (run_dir / "report.md").write_text(report.render_markdown(run_meta, rows))

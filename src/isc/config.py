@@ -22,6 +22,25 @@ class Settings(BaseSettings):
     jev_base_url: str = "http://127.0.0.1:8084"
     jev_model: str = "qwen3.8-27b"
 
+    # Parallel JEV backend on TypeSafe's actual hosted Jev (--backend typesafe), the control for
+    # "did using qwen introduce issues": same facts, questions, rules, and policy, only the
+    # backend differs. Bare names (no ISC_ prefix) matching jev-email-cascade exactly, so its
+    # .env works here unchanged. TypeSafe direct takes precedence over OpenRouter when both are
+    # set (see jev.typesafe_backend.TypesafeJevClient.from_settings).
+    typesafe_api_key: str | None = Field(default=None, validation_alias="TYPESAFE_API_KEY")
+    typesafe_model: str = Field(default="jev-latest", validation_alias="TYPESAFE_MODEL")
+    typesafe_systemone_url: str = Field(
+        default="https://api.typesafe.ai/v1/systemone", validation_alias="TYPESAFE_SYSTEMONE_URL"
+    )
+    openrouter_api_key: str | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
+    # Note: ISC_JEV_MODEL above is the *local* llama.cpp model; this bare JEV_MODEL is the
+    # *hosted* OpenRouter Jev model id -- two different things that happen to share a short name
+    # because that is what jev-email-cascade calls it.
+    openrouter_jev_model: str = Field(default="typesafe/jev-1.13", validation_alias="JEV_MODEL")
+    jev_decisions_url: str = Field(
+        default="https://openrouter.ai/api/alpha/decisions", validation_alias="JEV_DECISIONS_URL"
+    )
+
     # Generative arbiter for escalated disagreements. Default is a hosted frontier model, not a
     # second local server: it only fires on disputed questions, and llama-cpp-spark /
     # jev-email-cascade already establish this exact convention (bare OPENAI_API_KEY /

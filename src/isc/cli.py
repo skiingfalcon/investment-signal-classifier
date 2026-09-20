@@ -18,6 +18,7 @@ from isc.config import Settings, get_settings
 from isc.jev.llama_server import LlamaServerClient
 from isc.jev.llamacpp_backend import LlamaCppBackend
 from isc.jev.model_profiles import resolve_profile
+from isc.jev.typesafe_backend import MissingKeyError, TypesafeJevClient
 from isc.verify import GenerativeArbiter
 
 app = typer.Typer(add_completion=False)
@@ -135,7 +136,7 @@ def _build_backend(
     settings: Settings,
     backend_name: str,
     *,
-    model: str,
+    model: str | None,
     allow_experimental: bool,
     n_probs: int,
     parallel: int,
@@ -144,10 +145,19 @@ def _build_backend(
     if backend_name == "mock":
         return MockBackend()
     if backend_name == "llamacpp":
+        jev_model = model or settings.jev_model
         client = LlamaServerClient(settings.jev_base_url, timeout_s=settings.timeout_s)
-        profile = resolve_profile(model, allow_experimental=allow_experimental)
+        profile = resolve_profile(jev_model, allow_experimental=allow_experimental)
         raw = LlamaCppBackend(client, profile, n_probs=n_probs, parallel=parallel, id_slot=id_slot)
-        return JevBackend(raw, model, name="llamacpp")
+        return JevBackend(raw, jev_model, name="llamacpp")
+    if backend_name == "typesafe":
+        try:
+            client = TypesafeJevClient.from_settings(settings)
+        except MissingKeyError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        if model:
+            client.model = model  # e.g. pin a dated build echoed back in a prior run's run.json
+        return JevBackend(client, client.model, name="typesafe")
     raise typer.BadParameter(f"Unknown --backend {backend_name!r}")
 
 
@@ -169,7 +179,9 @@ def _build_arbiter(settings: Settings, *, gen_model: str | None) -> GenerativeAr
 
 @app.command(name="run")
 def run_cmd(
-    backend: str = typer.Option("mock", help="'llamacpp' or 'mock'"),
+    backend: str = typer.Option(
+        "mock", help="'llamacpp' (local qwen), 'typesafe' (hosted Jev), or 'mock'"
+    ),
     facts_path: Path = typer.Option(Path("data/facts.jsonl")),
     source_filter: str | None = typer.Option(
         None, "--source-filter", help="Substring match on FactSet.source"
@@ -181,13 +193,14 @@ def run_cmd(
     parallel: int = typer.Option(1),
     n_probs: int = typer.Option(64),
     id_slot: int = typer.Option(-1, help="Pin every completion to one llama-server slot"),
-    model: str | None = typer.Option(None, help="Overrides ISC_JEV_MODEL"),
+    model: str | None = typer.Option(
+        None, help="llamacpp: overrides ISC_JEV_MODEL; typesafe: pins a dated build id"
+    ),
     gen_model: str | None = typer.Option(None, help="Overrides ISC_GEN_MODEL"),
     allow_experimental: bool = typer.Option(False),
 ) -> None:
     """Run the cascade over a facts.jsonl and write a run directory."""
     settings = get_settings()
-    jev_model = model or settings.jev_model
     factsets = facts_module.read_facts(facts_path)
     if source_filter:
         factsets = [f for f in factsets if source_filter in f.source]
@@ -195,7 +208,7 @@ def run_cmd(
     decision_backend = _build_backend(
         settings,
         backend,
-        model=jev_model,
+        model=model,
         allow_experimental=allow_experimental,
         n_probs=n_probs,
         parallel=parallel,

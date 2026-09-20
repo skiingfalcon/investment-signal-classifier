@@ -76,3 +76,14 @@ def test_jev_classify_refuses_experimental_model_without_the_flag():
         app, ["jev", "classify", "examples/bicycle.json", "--model", "gpt-oss-120b"]
     )
     assert result.exit_code != 0
+
+
+def test_run_with_typesafe_backend_fails_fast_without_either_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    facts_path = tmp_path / "facts.jsonl"
+    facts_path.write_text("")  # backend construction is checked before any facts are needed
+    result = runner.invoke(app, ["run", "--backend", "typesafe", "--facts-path", str(facts_path)])
+    assert result.exit_code != 0
+    assert "TYPESAFE_API_KEY" in result.output
+    assert "OPENROUTER_API_KEY" in result.output

@@ -1,4 +1,6 @@
-from isc.report import compute_metrics, render_compare, render_markdown
+import pytest
+
+from isc.report import compute_metrics, cost_latency_metrics, render_compare, render_markdown
 
 RUN_META = {
     "backend": "mock",
@@ -95,3 +97,32 @@ def test_render_compare_produces_a_table_row_per_run():
     )
     assert text.count("| r1 ") == 1
     assert text.count("| r2 ") == 1
+
+
+def test_render_compare_shows_cost_and_no_warning_when_runs_match():
+    local_meta = dict(RUN_META, run_id="local", backend="llamacpp")
+    text = render_compare([(local_meta, ROWS), (dict(RUN_META, run_id="local2"), ROWS)])
+    assert "cost usd" in text
+    assert "| 0.000000 |" in text  # no jev_backend_metrics on these fixtures -> zero cost
+    assert "warning" not in text
+
+
+def test_render_compare_warns_on_mismatched_questions_hash():
+    hosted_rows = [dict(r) for r in ROWS]
+    local_meta = dict(RUN_META, run_id="local", questions_hash="abc123")
+    hosted_meta = dict(RUN_META, run_id="hosted", questions_hash="def456")
+    text = render_compare([(local_meta, ROWS), (hosted_meta, hosted_rows)])
+    assert "warning: questions_hash differs" in text
+
+
+def test_cost_latency_metrics_sums_jev_cost_and_flags_estimation():
+    rows = [
+        {
+            "stage1": {"latency_ms": 1.0, "metrics": {"cost_usd": 0.01, "cost_estimated": False}},
+            "stage2": {"latency_ms": 1.0, "metrics": {"cost_usd": 0.002, "cost_estimated": True}},
+            "generative": None,
+        }
+    ]
+    cl = cost_latency_metrics(rows)
+    assert cl["jev_cost_usd"] == pytest.approx(0.012)
+    assert cl["jev_cost_estimated"] is True
