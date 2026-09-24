@@ -2,16 +2,21 @@
 marp: true
 paginate: true
 title: Jev for investment signals
+style: |
+  section { font-size: 26px; padding: 50px 70px; }
+  h1 { font-size: 42px; }
+  table { font-size: 21px; }
+  small { font-size: 18px; }
 ---
 
 # Feedback first: thresholds are ML tuning
 
 Jev returns probabilities and our code routes on thresholds, so **tuning those thresholds is ML tuning**, even with no training.
 
-- 0.60 choice · 0.70 `overall_signal` · 0.50 leverage · 0.75 yes/no · 0.70 support: set by judgment, never tuned
-- Tuned and reported on the same 336 rows → optimistic. We need a held-out set.
-- Tied to one model build and one question wording. If either changes, re-validate.
-- Each one is a trade-off, not a dial with a right answer.
+- Our thresholds were set by judgment, never tuned on this data
+- Tuning on the rows we report on → optimistic. We need a held-out set.
+- Tied to one model build and one question wording. Change either → re-validate.
+- Each one trades more auto-routing against more confident mistakes
 
 **Next:** no threshold changes before the volume run · tune/hold-out split · the business's cost of a wrong signal
 
@@ -19,7 +24,7 @@ Jev returns probabilities and our code routes on thresholds, so **tuning those t
 
 <!--
 Open with this, because the rest of the deck depends on thresholds.
-These values came over from the email project (policy.py POLICY), and nobody fitted them to this data. The results that follow are reported on the same rows we looked at, so read them as optimistic.
+The values (policy.py POLICY): 0.60 Choice confidence, 0.70 for overall_signal, 0.50 leverage, 0.75 yes/no, 0.70 stage-2 support. They came over from the email project, and nobody fitted them to this data. Results later in the deck are reported on the same rows, so read them as optimistic.
 With calibrated probabilities, the cost of a mis-route is the number that actually sets the threshold, and that number has to come from the business.
 -->
 
@@ -34,8 +39,27 @@ A generative model only handles what those can't settle.
 <small>Code, data, and every run: [github.com/skiingfalcon/investment-signal-classifier](https://github.com/skiingfalcon/investment-signal-classifier)</small>
 
 <!--
-Same pattern as jev-email-cascade. The difference: the input is numeric, so a rule engine can compute the same labels exactly, which means we get ground truth for free.
+Same pattern as jev-email-cascade. The difference: the input is numeric, so a rule engine can compute the same labels exactly, which means we get an answer key for free.
 336 company-years: 60 clean XBRL rows across 12 tickers, plus 276 rows that replay those companies through 23 10-K extraction runs.
+-->
+
+---
+
+# Why Jev? Why two levels?
+
+**Why not a chat model?** It writes text: slow, billed per token, and the confidence it types isn't a probability.  
+**Jev** reads once and returns real probabilities that code can route on.
+
+**Why not just arithmetic?** Here it's the answer key. Real filings also have text (MD&A, footnotes) that arithmetic can't read, so we need to know how far Jev can be trusted.
+
+**Why both?** Jev alone grades itself. Arithmetic alone can't judge.  
+Auto only when **both agree**.
+
+<!--
+This slide holds the rest of the deck together.
+Chat model: it can return JSON, but the number inside that JSON is text it generated, not a calibrated probability. It also pays for a decode step for every output token. Jev does one pass: 249 ms p50 for all 8 questions on the hosted build.
+Arithmetic: we picked numeric questions on purpose so there is ground truth. That is how we can measure Jev at all. The questions worth automating later are the ones with no rule behind them.
+Two levels: two independent signals. For an auto-route to be wrong, both have to be wrong the same way at the same time. Slide "What if a tier is missing?" puts numbers on it.
 -->
 
 ---
@@ -71,7 +95,7 @@ How the probabilities are produced depends on the backend. See "Two ways to run 
 | `share_count` | Choice | buyback · stable · dilution |
 | `overall_signal` | Choice | **bullish · neutral · bearish** |
 
-Choice = pick one · Score = place on a scale · Noul = P(yes), 0.5 = cannot tell
+<small>Choice = pick one · Score = place on a scale · Noul = P(yes), 0.5 = cannot tell</small>
 
 <!--
 Every Choice also has "other" (data not reported), which is the escape hatch.
@@ -81,9 +105,7 @@ overall_signal: check bearish first (loss, NI down ≥5%, or revenue down ≥3%)
 
 ---
 
-# One company in → Jev out
-
-**AAPL FY2025** (hosted Jev)
+# One company in → Jev out: AAPL FY2025
 
 | | Jev | Rules |
 | --- | --- | --- |
@@ -99,8 +121,9 @@ overall_signal: check bearish first (loss, NI down ≥5%, or revenue down ≥3%)
 Confident **and** agrees on all 8 → `route = auto`
 
 <!--
-runs/20260920T161159Z/results.jsonl, first row. 2,168 input tokens, 483 ms, $0.00009.
-Everything agrees, so nothing else runs. The next two slides cover what happens when they don't agree.
+Hosted Jev, runs/20260920T161159Z/results.jsonl, first row. 2,168 input tokens, 483 ms, $0.00009.
+P(yes) 0.03 means Jev is confident the answer is no, and the rules agree.
+Everything agrees, so nothing else runs. The next slides cover what happens when they don't agree.
 -->
 
 ---
@@ -111,36 +134,57 @@ Confidence is the model **grading itself**.
 
 STWD FY2021: Jev said **bullish at 0.99**. The truth was neutral.
 
-So we get a second opinion that doesn't come from a model: **arithmetic**.
+So we check it against something that isn't a model: **arithmetic**.
 
 **Doubt moves a question to the next stage.**
 
 <!--
-The rule engine (rules.py) computes the same 8 labels from the same numbers. It is independent of Jev and costs nothing.
-Auto needs two independent signals to agree: Jev is confident, and Jev matches the arithmetic.
 "Doubt" means Jev is below its threshold, or Jev and the rules disagree.
+This is the "why two levels" from slide 3, shown on a real row.
 -->
 
 ---
 
 # Moving between stages
 
-| Stage | Moves on when… | Why this stage next | Cost |
+| Stage | Moves on when… | Why the next stage | Cost |
 | --- | --- | --- | --- |
-| **1** Jev + rules | not confident, or disagrees | could be Jev *or* the rules that's wrong | 1 call |
-| **2** "Do the facts support Jev's claim?" | support < 0.70 and rules have no answer | only now is paying worth it | +1 call |
+| **1** Jev + rules | not confident, or disagrees | either side could be wrong | 1 call |
+| **2** Re-ask Jev, else take the rules' answer | still no answer | only now is paying worth it | +1 call |
 | **3** Frontier arbiter | bad output or 3-way split | stop guessing | $ per call |
 | **4** Human review | — | — | a person |
 
-Each stage only sees what the cheaper one couldn't settle.  
-<small>Yes/no questions skip stage 2.</small>
+Each stage only sees what the cheaper one couldn't settle.
+
+<small>Yes/no questions skip the re-ask and go straight to the rules' answer.</small>
 
 <!--
-Stage 1 → 2: a disagreement doesn't tell you who's wrong. The rules can be missing data or hit an edge case. So ask Jev one narrower question: is its own claim supported by the numbers? High support means keep Jev (verified). Low support means use the rules' answer if it has one (also verified).
-Why Noul skips stage 2: a yes/no answer already is a probability, so there is no separate claim to test. It goes straight to the rules' answer.
-Stage 2 → 3: neither Jev nor the rules can settle it. Only here do we call gpt-5.6-terra. It sees the state, Jev's answers, and the rules' answers, and must return strict JSON that passes Pydantic validation.
-Stage 3 → 4: invalid output, or Jev, the rules, and the arbiter all disagree. Send it to a person.
+Stage 1 → 2: a disagreement doesn't tell you who's wrong. The rules can be missing data. Stage 2 asks Jev one narrower question: are the numbers consistent with your answer? Support ≥ 0.70 keeps Jev. Otherwise it takes the rules' answer if the rules have one. Either way the route is "verified".
+Yes/no: the answer already is a probability, so there's no separate claim to re-test.
+Stage 2 → 3: nobody has an answer. Only now do we call gpt-5.6-terra. It sees the state, Jev's answers, and the rules' answers, and must return strict JSON that passes Pydantic validation.
+Stage 3 → 4: invalid output, or Jev, the rules, and the arbiter all disagree. A person decides.
 Every threshold in this table is one of the numbers from slide 1.
+-->
+
+---
+
+# What if a tier is missing?
+
+| Without… | What happens | In our runs |
+| --- | --- | --- |
+| **Rules check** | confident mistakes go straight through | qwen: **108 of 427** clean answers wrong, vs 0 |
+| **Stage 2** | every dispute goes to the paid model | qwen: **306 more rows** billed |
+| **Arbiter** | disputes wait for a person | qwen hit this: **22 rows** to review |
+| **Human review** | 3-way splits get guessed | a wrong signal ships silently |
+
+The tiers are insurance. **You don't know in advance which model you have.**
+
+<!--
+Rules check: "trust confidence" means accept every stage-1 answer that clears its threshold. On the 60 clean XBRL rows (427 scoreable answers), qwen got 108 wrong that way, mostly its yes/no answers. With the cascade it got 0 wrong. On clean rows the rules are the truth, so 0 is expected, not impressive. The 108 is the point.
+Hosted Jev barely needed it on clean rows (5 wrong either way). On extraction-damaged rows the fallback made it slightly worse (78 → 95 wrong), because the rules follow the bad number too. See "Where it breaks".
+Stage 2: with verify off, stage 2's disputes skip the rules fallback and go to the arbiter. For qwen that is the 306 "verified" rows (583 answers).
+Arbiter: qwen's escalation arm was broken this run (auth), so 22 rows went to review. That is the measured cost of losing that tier. For hosted Jev it would be 68 rows (20%).
+Human: an arbiter that returns invalid output, or disagrees with both, would otherwise be accepted as-is.
 -->
 
 ---
@@ -158,7 +202,7 @@ Same final accuracy. **Very different paths to get there.**
 
 <!--
 CIs overlap on overall_signal (97–100 vs 96–99), so treat it as a tie.
-qwen: its raw yes/no answers agree with the arithmetic only 23% of the time, so almost every row goes through the rules fallback and ends up "verified". Its escalation arm was broken this run (auth), which is why it shows 0 escalations and 22 review.
+qwen: its raw yes/no answers agree with the arithmetic only 23% of the time, so almost every row goes through the rules fallback and ends up "verified".
 TypeSafe: yes/no answers are 100% on stage 1. Most of its 68 escalations come from leverage (52).
 The latency gap is most likely our own per-question HTTP overhead on the local path, not the model. We haven't instrumented it yet.
 Source: docs/cto-brief.md, runs/*/report.md.
@@ -170,12 +214,12 @@ Source: docs/cto-brief.md, runs/*/report.md.
 
 The stages check **consistency**, not **truth**.
 
-- **STWD FY2021:** the rules disagreed, but stage 2 asked Jev again and it said "supported" (0.81). Jev was kept and it was wrong.
+- **Stage 2's re-ask** kept Jev's answer 5 times, and **all 5 were wrong** (STWD included). The rules fallback did the real work.
 - **Bad extraction:** Jev and the rules read the same wrong number and agree. Only 2.8% (qwen) / 11.3% (TypeSafe) were caught.
 - **`share_count` 83.6%** on both backends: a data issue, not a model issue.
 
 <!--
-STWD: stage 2 isn't independent. It's the same model checking its own claim. On clean XBRL rows the rules are the truth, so overriding them can only hurt.
+Re-ask: it's the same model checking its own claim, so it isn't independent. All 5 were on clean XBRL rows, where the rules are the truth, so overriding the rules can only hurt there. Keep the fallback, rethink the re-ask. Across both runs the fallback resolved 585 answers.
 Extraction: 71 rows where an extractor's number changed a label. The double check can't catch an error that sits upstream of both readers.
 share_count: EDGAR's diluted-shares figure is dated at the cover page, not the fiscal year end, so the fix belongs in xbrl.py.
 -->
@@ -210,5 +254,5 @@ The thresholds that define "doubt" are next, **done properly**.
 
 <!--
 Back to slide 1: tune/hold-out split, a mis-route cost from the business, and no changes before the volume run.
-Also open: instrument the local latency, rethink stage 2 as an independent check, and fix the share_count source.
+Also open: rethink the stage-2 re-ask as an independent check, instrument the local latency, and fix the share_count source.
 -->
